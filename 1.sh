@@ -49,10 +49,8 @@ if [ ! -d "$DEPOT_TOOLS_DIR" ]; then
   git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$DEPOT_TOOLS_DIR"
 else
   echo "    depot_tools 已存在，尝试更新..."
-  pushd "$DEPOT_TOOLS_DIR" > /dev/null
   # 使用 -C 指定目录，避免不必要的 cd
   git -C "$DEPOT_TOOLS_DIR" pull origin main
-  popd > /dev/null # 返回 V8_BUILD_DIR
 fi
 
 # 将 depot_tools 添加到当前 Shell 的 PATH (更稳健的方式)
@@ -69,15 +67,22 @@ fi
 
 # 4. 获取 V8 源码
 echo ">>> 步骤 4: 获取 V8 源码..."
-if [ ! -d "v8" ]; then
+V8_SRC_DIR="$V8_BUILD_DIR/v8" # 定义 V8 源码路径变量
+if [ ! -d "$V8_SRC_DIR" ]; then
   echo "    使用 'fetch v8' 下载 V8 源码及其依赖 (这可能需要很长时间)..."
   fetch v8
-  pushd v8 > /dev/null # 进入 v8 目录
+  # fetch v8 之后，当前目录应该就是 v8
+  if [ ! -d "$V8_SRC_DIR" ]; then # Double check fetch created the directory as expected
+      echo "错误：'fetch v8' 命令后未找到 v8 目录 '$V8_SRC_DIR'" >&2
+      popd > /dev/null # 退出 V8_BUILD_DIR
+      exit 1
+  fi
+  pushd "$V8_SRC_DIR" > /dev/null # 进入 v8 目录
   echo "    运行 'gclient sync' 确保所有依赖都已同步..."
   gclient sync
 else
   echo "    V8 目录已存在，进入目录并尝试更新..."
-  pushd v8 > /dev/null # 进入 v8 目录
+  pushd "$V8_SRC_DIR" > /dev/null # 进入 v8 目录
   echo "    运行 'git pull origin main' 更新 V8 主分支..."
   # 检查是否有本地修改，避免 pull 失败
   if git status --porcelain | grep .; then
@@ -93,6 +98,33 @@ else
   gclient sync
 fi
 # 确保当前目录是 v8 (pushd 成功时会自动进入)
+
+# --- 添加的步骤：安装 sysroot ---
+# 4.5. 安装构建所需的 sysroot (V8/Chromium build requirement on Linux)
+echo ">>> 步骤 4.5: 安装/更新构建所需的 sysroot..."
+# Map TARGET_CPU to sysroot architecture name used by the script
+SYSROOT_ARCH=""
+if [ "$TARGET_CPU" == "x64" ]; then
+    SYSROOT_ARCH="amd64"
+elif [ "$TARGET_CPU" == "arm64" ]; then
+    SYSROOT_ARCH="arm64"
+# Add other architectures if needed (e.g., arm)
+# elif [ "$TARGET_CPU" == "arm" ]; then
+#     SYSROOT_ARCH="arm"
+else
+    echo "错误：未知的 TARGET_CPU '$TARGET_CPU'，无法确定 sysroot 架构。" >&2
+    # popd back out before exiting
+    popd > /dev/null # Exit v8 dir
+    popd > /dev/null # Exit V8_BUILD_DIR
+    exit 1
+fi
+
+echo "    正在为架构 $SYSROOT_ARCH 安装/更新 sysroot (如果需要，会自动下载)..."
+# Run the sysroot installation script from within the v8 directory
+# Using python3 explicitly is safer
+python3 build/linux/sysroot_scripts/install-sysroot.py --arch="$SYSROOT_ARCH"
+# --- sysroot 安装结束 ---
+
 
 # 5. 配置构建 (使用 GN)
 echo ">>> 步骤 5: 配置构建 (使用 GN)..."
@@ -129,7 +161,7 @@ ninja -C "$BUILD_OUTPUT_DIR" d8 -j"$BUILD_JOBS"
 # 7. 完成
 echo "---------------------------------"
 echo ">>> 编译完成！"
-V8_SRC_DIR="$V8_BUILD_DIR/v8" # 定义 V8 源码路径变量
+# V8_SRC_DIR 变量已在步骤 4 定义
 D8_PATH="$V8_SRC_DIR/$BUILD_OUTPUT_DIR/d8"
 echo "    d8 可执行文件位于: $D8_PATH"
 echo ""
